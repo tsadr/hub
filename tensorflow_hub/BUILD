@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-licenses(["notice"])  # Apache 2.0 License
+licenses(["notice"])
+
+load("//tensorflow_hub:protos.bzl", "tf_hub_proto_library")  # buildifier: disable=load-on-top
 
 package(default_visibility = ["//:__subpackages__"])
 
 exports_files(["LICENSE"])
-
-load("//tensorflow_hub:protos.bzl", "tf_hub_proto_library")
 
 # This is the public import users should use.
 py_library(
@@ -33,10 +33,23 @@ py_library(
         ":estimator",
         ":feature_column",
         ":image_util",
+        ":keras_layer",
         ":module",
+        ":module_v2",
         ":saved_model_module",
         "//tensorflow_hub:expect_tensorflow_installed",
         ":config",
+        "//tensorflow_hub/tools:empty_package",
+    ],
+)
+
+py_library(
+    name = "tf_v1",
+    srcs = [
+        "tf_v1.py",
+    ],
+    deps = [
+        "//tensorflow_hub:expect_tensorflow_installed",
     ],
 )
 
@@ -57,6 +70,7 @@ py_library(
     srcs_version = "PY2AND3",
     deps = [
         ":tf_utils",
+        ":tf_v1",
         "//tensorflow_hub:expect_tensorflow_installed",
     ],
 )
@@ -64,7 +78,9 @@ py_library(
 py_test(
     name = "estimator_test",
     srcs = ["estimator_test.py"],
+    python_version = "PY3",
     srcs_version = "PY2AND3",
+    tags = ["notsan"],  # b/111624588
     deps = [
         "//tensorflow_hub:expect_tensorflow_installed",
         "//tensorflow_hub",
@@ -77,6 +93,7 @@ py_library(
     srcs_version = "PY2AND3",
     deps = [
         ":module",
+        ":tf_v1",
         "//tensorflow_hub:expect_tensorflow_installed",
         #  "tensorflow/python/feature_column",
     ],
@@ -85,9 +102,11 @@ py_library(
 py_test(
     name = "feature_column_test",
     srcs = ["feature_column_test.py"],
+    python_version = "PY3",
     srcs_version = "PY2AND3",
     deps = [
         ":tensorflow_hub",
+        ":test_utils",
         "//tensorflow_hub:expect_numpy_installed",
         "//tensorflow_hub:expect_tensorflow_installed",
     ],
@@ -99,6 +118,7 @@ py_library(
     srcs_version = "PY2AND3",
     deps = [
         ":resolver",
+        ":tf_v1",
         "//tensorflow_hub:expect_tensorflow_installed",
     ],
 )
@@ -107,6 +127,7 @@ py_test(
     name = "compressed_module_resolver_test",
     size = "medium",
     srcs = ["compressed_module_resolver_test.py"],
+    python_version = "PY3",
     srcs_version = "PY2AND3",
     tags = ["nofixdeps"],
     deps = [
@@ -130,6 +151,7 @@ py_library(
 py_test(
     name = "image_util_test",
     srcs = ["image_util_test.py"],
+    python_version = "PY3",
     srcs_version = "PY2AND3",
     deps = [
         ":image_util",
@@ -157,6 +179,7 @@ py_library(
 py_test(
     name = "module_test",
     srcs = ["module_test.py"],
+    python_version = "PY3",
     srcs_version = "PY2AND3",
     deps = [
         ":module",
@@ -174,6 +197,7 @@ py_library(
         ":native_module",
         ":saved_model_lib",
         ":tf_utils",
+        ":tf_v1",
         "//tensorflow_hub:expect_tensorflow_installed",
     ],
 )
@@ -181,6 +205,7 @@ py_library(
 py_test(
     name = "saved_model_module_test",
     srcs = ["saved_model_module_test.py"],
+    python_version = "PY3",
     srcs_version = "PY2AND3",
     deps = [
         ":saved_model_lib",
@@ -208,6 +233,7 @@ py_library(
 py_test(
     name = "native_module_test",
     srcs = ["native_module_test.py"],
+    python_version = "PY3",
     srcs_version = "PY2AND3",
     deps = [
         ":all_protos_py_pb2",
@@ -224,6 +250,7 @@ py_library(
     srcs_version = "PY2AND3",
     deps = [
         ":tf_utils",
+        ":tf_v1",
         "//tensorflow_hub:expect_tensorflow_installed",
     ],
 )
@@ -232,6 +259,7 @@ py_test(
     name = "resolver_test",
     size = "medium",
     srcs = ["resolver_test.py"],
+    python_version = "PY3",
     srcs_version = "PY2AND3",
     deps = [
         ":resolver",
@@ -253,6 +281,10 @@ py_library(
 py_test(
     name = "e2e_test",
     srcs = ["e2e_test.py"],
+    data = [
+        "testdata/half_plus_two_v1.tar.gz",
+    ],
+    python_version = "PY3",
     srcs_version = "PY2AND3",
     deps = [
         ":tensorflow_hub",
@@ -268,6 +300,7 @@ py_library(
     deps = [
         ":all_protos_py_pb2",
         ":tf_utils",
+        ":tf_v1",
         "//tensorflow_hub:expect_tensorflow_installed",
         #  "tensorflow/core:protos_all_py_pb2",
     ],
@@ -277,6 +310,7 @@ py_test(
     name = "saved_model_lib_test",
     size = "small",
     srcs = ["saved_model_lib_test.py"],
+    python_version = "PY3",
     srcs_version = "PY2AND3",
     deps = [
         ":saved_model_lib",
@@ -299,6 +333,7 @@ py_library(
     srcs = ["tensor_info.py"],
     srcs_version = "PY2AND3",
     deps = [
+        ":tf_v1",
         "//tensorflow_hub:expect_tensorflow_installed",
     ],
 )
@@ -307,6 +342,7 @@ py_test(
     name = "tensor_info_test",
     size = "small",
     srcs = ["tensor_info_test.py"],
+    python_version = "PY3",
     srcs_version = "PY2AND3",
     deps = [
         ":tensor_info",
@@ -332,9 +368,36 @@ py_library(
 py_test(
     name = "registry_test",
     srcs = ["registry_test.py"],
+    python_version = "PY3",
     srcs_version = "PY2AND3",
     deps = [
         ":registry",
+        "//tensorflow_hub:expect_tensorflow_installed",
+    ],
+)
+
+py_library(
+    name = "keras_layer",
+    srcs = ["keras_layer.py"],
+    srcs_version = "PY2AND3",
+    deps = [
+        "//tensorflow_hub:expect_tensorflow_installed",
+    ],
+)
+
+py_test(
+    name = "keras_layer_test",
+    srcs = ["keras_layer_test.py"],
+    data = [
+        "testdata/hub_module_v1_mini",
+        "testdata/saved_model_v2_mini",
+    ],
+    python_version = "PY3",
+    shard_count = 2,
+    srcs_version = "PY2AND3",
+    deps = [
+        ":tensorflow_hub",
+        ":test_utils",
         "//tensorflow_hub:expect_tensorflow_installed",
     ],
 )
@@ -359,4 +422,81 @@ py_library(
 # `pip install numpy`
 py_library(
     name = "expect_numpy_installed",
+)
+
+# We expect tensorflow_datasets to already be installed on the system, e.g. via
+# `pip install tensorflow-datasets`
+py_library(
+    name = "expect_tensorflow_datasets_installed",
+)
+
+# We expect absl to already be installed on the system, e.g. via
+# `pip install absl-py`
+py_library(
+    name = "expect_absl_py_installed",
+)
+
+# We expect pandas to already be installed on the system, e.g. via
+# `pip install pandas`
+py_library(
+    name = "expect_pandas_installed",
+)
+
+# We expect sklearn to already be installed on the system, e.g. via
+# `pip install sklearn`
+py_library(
+    name = "expect_sklearn_installed",
+)
+
+# We expect the runtime libraries for generated Python protocol messages
+# to already be installed on the system, e.g. via
+# `pip install protobuf`
+py_library(
+    name = "expect_protobuf_installed",
+)
+
+# We expect apache_beam to already be installed on the system, e.g. via
+# `pip install apache_beam`
+py_library(
+    name = "expect_apache_beam_installed",
+)
+
+# We expect annoy to already be installed on the system, e.g. via
+# `pip install annoy`
+py_library(
+    name = "expect_annoy_installed",
+)
+
+# An expectation for resources import
+py_library(
+    name = "expect_resources_installed",
+)
+
+py_library(
+    name = "module_v2",
+    srcs = ["module_v2.py"],
+    srcs_version = "PY2AND3",
+    deps = [
+        ":module",
+        ":native_module",
+        ":tf_v1",
+        "//tensorflow_hub:expect_tensorflow_installed",
+    ],
+)
+
+py_test(
+    name = "module_v2_test",
+    srcs = ["module_v2_test.py"],
+    data = [
+        "testdata/hub_module_v1_mini",
+        "testdata/saved_model_v2_mini",
+    ],
+    python_version = "PY3",
+    srcs_version = "PY2AND3",
+    deps = [
+        ":module_v2",
+        ":test_utils",
+        "//tensorflow_hub:expect_tensorflow_installed",
+        ":config",
+    ],
 )

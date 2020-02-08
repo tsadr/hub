@@ -16,6 +16,14 @@ licenses(["notice"])  # Apache 2.0
 
 py_binary(
     name = "export",
+    srcs = ["export.py"],
+    python_version = "PY2",
+    srcs_version = "PY2AND3",
+    deps = [":export_lib"],
+)
+
+py_library(
+    name = "export_lib",
     srcs = [
         "export.py",
     ],
@@ -29,9 +37,10 @@ py_binary(
 py_test(
     name = "export_test",
     srcs = ["export_test.py"],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
     deps = [
-        ":export",
+        ":export_lib",
         "//tensorflow_hub:expect_numpy_installed",
         "//tensorflow_hub:expect_tensorflow_installed",
         "//tensorflow_hub",

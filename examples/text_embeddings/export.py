@@ -81,8 +81,8 @@ def load(file_path, parse_line_fn):
       embeddings_dim = len(embedding)
     elif embeddings_dim != len(embedding):
       raise ValueError(
-          "Inconsistent embedding dimension detected, %d != %d for token %s",
-          embeddings_dim, len(embedding), token)
+          ("Inconsistent embedding dimension detected, "
+           "%d != %d for token %s") % (embeddings_dim, len(embedding), token))
 
     vocabulary.append(token)
     embeddings.append(embedding)
@@ -118,10 +118,12 @@ def make_module_spec(vocabulary_file, vocab_size, embeddings_dim,
         name=EMBEDDINGS_VAR_NAME,
         dtype=tf.float32)
 
-    lookup_table = tf.contrib.lookup.index_table_from_file(
-        vocabulary_file=vocabulary_file,
-        num_oov_buckets=num_oov_buckets,
-    )
+    table_initializer = tf.lookup.TextFileInitializer(
+        vocabulary_file,
+        tf.string, tf.lookup.TextFileIndex.WHOLE_LINE,
+        tf.int64, tf.lookup.TextFileIndex.LINE_NUMBER)
+    lookup_table = tf.lookup.StaticVocabularyTable(
+        table_initializer, num_oov_buckets=num_oov_buckets)
     ids = lookup_table.lookup(tokens)
     combined_embedding = tf.nn.embedding_lookup(params=embeddings_var, ids=ids)
     hub.add_signature("default", {"tokens": tokens},
@@ -140,10 +142,12 @@ def make_module_spec(vocabulary_file, vocab_size, embeddings_dim,
         initializer=tf.zeros([vocab_size + num_oov_buckets, embeddings_dim]),
         name=EMBEDDINGS_VAR_NAME,
         dtype=tf.float32)
-    lookup_table = tf.contrib.lookup.index_table_from_file(
-        vocabulary_file=vocabulary_file,
-        num_oov_buckets=num_oov_buckets,
-    )
+    table_initializer = tf.lookup.TextFileInitializer(
+        vocabulary_file,
+        tf.string, tf.lookup.TextFileIndex.WHOLE_LINE,
+        tf.int64, tf.lookup.TextFileIndex.LINE_NUMBER)
+    lookup_table = tf.lookup.StaticVocabularyTable(
+        table_initializer, num_oov_buckets=num_oov_buckets)
     sparse_ids = tf.SparseTensor(
         indices=tokens.indices,
         values=lookup_table.lookup(tokens.values),
@@ -267,7 +271,7 @@ if __name__ == "__main__":
   parser.add_argument(
       "--preprocess_text",
       type=bool,
-      default=False,
+      default=True,
       help="Whether to preprocess the input tensor by removing punctuation and "
       "splitting on spaces. Use this if input is a dense tensor of untokenized "
       "sentences.")

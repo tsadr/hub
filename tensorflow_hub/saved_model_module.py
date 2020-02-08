@@ -12,15 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Module implementation that loads raw SavedModels."""
+"""Implementation of deprecated hub.Module that loads raw TF1 SavedModels."""
 
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import tensorflow as tf
 from tensorflow_hub import native_module
 from tensorflow_hub import saved_model_lib
+from tensorflow_hub import tf_v1
 
 
 _ALWAYS_DROPPED_COLLECTIONS = [
@@ -30,7 +30,7 @@ _ALWAYS_DROPPED_COLLECTIONS = [
     # This collection is ignored when loading it as a module. However the
     # variable that contains the step would still be brought in if declared
     # in the VARIABLES collection.
-    tf.GraphKeys.GLOBAL_STEP,
+    tf_v1.GraphKeys.GLOBAL_STEP,
 
     # SavedModels exported for serving use cases contain collections which refer
     # to ops in the graph that when run are responsible to initialize the
@@ -41,8 +41,8 @@ _ALWAYS_DROPPED_COLLECTIONS = [
     # init op can be ignored in favor of initializing using the
     # tf.train.MonitoredSession mechanisms + construction of a new tf.Saver()
     # from the global variables collection.
-    tf.saved_model.constants.LEGACY_INIT_OP_KEY,
-    tf.saved_model.constants.MAIN_OP_KEY,
+    tf_v1.saved_model.constants.LEGACY_INIT_OP_KEY,
+    tf_v1.saved_model.constants.MAIN_OP_KEY,
 ]
 
 
@@ -55,7 +55,11 @@ def _drop_collections(saved_model_handler, collections):
 
 def create_module_spec_from_saved_model(saved_model_path,
                                         drop_collections=None):
-  """Experimental: Create a ModuleSpec out of a SavedModel.
+  """Experimental: Create a ModuleSpec out of a SavedModel from TF1.
+
+  DEPRECATION NOTE: This belongs to the hub.Module API and file format for TF1.
+  For TF2, TensorFlow Hub ships plain SavedModels, removing the need for
+  conversions like this.
 
   Define a ModuleSpec from a SavedModel. Note that this is not guaranteed to
   work in all cases and it assumes the SavedModel has followed some conventions:

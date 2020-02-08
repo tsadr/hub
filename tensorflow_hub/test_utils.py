@@ -23,7 +23,20 @@ import socket
 import sys
 import threading
 
+from absl import flags
 import tensorflow as tf
+
+# TODO(b/73987364): It is not possible to extend feature columns without
+# depending on TensorFlow internal implementation details.
+# pylint: disable=g-direct-tensorflow-import
+# pylint: disable=g-import-not-at-top,g-statement-before-imports
+try:
+  from tensorflow.python.feature_column import dense_features_v2
+except ImportError:
+  pass
+# pylint: disable=g-import-not-at-top,g-statement-before-imports
+from tensorflow.python.feature_column import feature_column_v2
+# pylint: enable=g-direct-tensorflow-import
 
 
 def _do_redirect(handler, location):
@@ -67,6 +80,10 @@ def start_smart_module_server(download_url):
     import socketserver
     import urllib
 
+    class TCPServerV6(socketserver.TCPServer):
+
+      address_family = socket.AF_INET6
+
     class RequestHandler(http.server.SimpleHTTPRequestHandler):
 
       def do_GET(self):
@@ -77,8 +94,8 @@ def start_smart_module_server(download_url):
         else:
           _do_documentation(self)
 
-    server = socketserver.TCPServer(("", 0), RequestHandler)
-    _, server_port = server.server_address
+    server = TCPServerV6(("", 0), RequestHandler)
+    _, server_port, _, _ = server.server_address
   # pylint:disable=g-import-not-at-top
 
   thread = threading.Thread(target=server.serve_forever)
@@ -113,14 +130,18 @@ def start_http_server(redirect=None):
     import http.server
     import socketserver
 
+    class TCPServerV6(socketserver.TCPServer):
+
+      address_family = socket.AF_INET6
+
     class RedirectHandler(http.server.SimpleHTTPRequestHandler):
 
       def do_GET(self):
         _do_redirect(self, redirect)
 
-    server = socketserver.TCPServer(("", 0), RedirectHandler if redirect else
-                                    http.server.SimpleHTTPRequestHandler)
-    _, server_port = server.server_address
+    server = TCPServerV6(("", 0), RedirectHandler if redirect else
+                         http.server.SimpleHTTPRequestHandler)
+    _, server_port, _, _ = server.server_address
   # pylint:disable=g-import-not-at-top
 
   thread = threading.Thread(target=server.serve_forever)
@@ -132,9 +153,29 @@ def start_http_server(redirect=None):
 
 def test_srcdir():
   """Returns the path where to look for test data files."""
-  if "test_srcdir" in tf.app.flags.FLAGS:
-    return tf.app.flags.FLAGS["test_srcdir"].value
+  if "test_srcdir" in flags.FLAGS:
+    return flags.FLAGS["test_srcdir"].value
   elif "TEST_SRCDIR" in os.environ:
     return os.environ["TEST_SRCDIR"]
   else:
     raise RuntimeError("Missing TEST_SRCDIR environment.")
+
+
+def get_dense_features_module():
+  """Returns the module that contains DenseFeatures class.
+
+  This is a defense against changes in https://github.com/tensorflow/tensorflow/commit/64586f18724f737393071125a91b19adf013cf8a  # pylint: disable=line-too-long
+  that moved DenseFeatures into dense_features_v2.
+  """
+  if hasattr(feature_column_v2, "DenseFeatures"):
+    return feature_column_v2
+  return dense_features_v2
+
+
+def get_test_data_path(file_or_dirname):
+  """Return full test data path."""
+  for directory, subdirs, files in tf.io.gfile.walk(test_srcdir()):
+    for f in subdirs + files:
+      if f.endswith(file_or_dirname):
+        return os.path.join(directory, f)
+  raise ValueError("No %s in test directory" % file_or_dirname)

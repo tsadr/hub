@@ -13,8 +13,41 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================-->
 
-# Current version (0.3.0-dev)
- * Under development.
+# Current version 0.8.0-dev
+  * Under development
+
+# Release 0.7.0
+  * Added support for HubModule v1 in KerasLayer with default tags/signatures.
+  * Added support for the KerasLayer to specify tags, signature, as_dict, and
+    output_key arguments.
+  * Miscellaneous fixes to `hub.KerasLayer`
+  * Documentation update for TensorFlow 2.
+      * Use `hub.load()` and `hub.KerasLayer` with TF2 (also works in 1.15).
+      * For TF1, `hub.Module` and it's associated APIs remain available.
+
+# Release 0.6.0
+  * Added two examples for exporting of Hub/TF2 modules.
+  * Switched to `dense_features_v2` if a high enough TF version is installed.
+  * Added `tools/make_image_classifier` for use with TF2.
+
+# Release 0.5.0
+  * Fixes in `hub.KerasLayer` related with regularizers, config serialization
+    and usage with `tf.estimator`.
+  * Updates to feature columns to be compatible with feature columns V2 apis and
+    add `hub.sparse_text_embedding_column` for bag of words features.
+  * Made `hub.Module` usable within `tf.compat.v1.wrap_function`.
+
+# Release 0.4.0
+  * `hub.KerasLayer` (for Hub/TF2 modules) can be used in graph mode
+     and can be converted to/from a Keras config.
+  * In TF1.x, `hub.Module` can be used inside a defun (helps with TPU).
+  * References to TensorFlow Estimator correctly pick up its v1 API.
+
+# Release 0.3.0
+  * Initial support for Tensorflow 2.0
+  * Tensorflow Hub Library API for Tensorflow 2.0
+  * Tensorflow Hub Keras API for Tensorflow 2.0
+  * Enable using Tensorflow Hub library against Tensorflow 2.0 run-time.
 
 # Release 0.2.0
  * Add support for caching modules on GCS.

@@ -18,11 +18,13 @@
 # pylint: disable=line-too-long
 r"""Simple transfer learning with image modules from TensorFlow Hub.
 
+WARNING: This code is deprecated in favor of
+https://github.com/tensorflow/hub/tree/master/tensorflow_hub/tools/make_image_classifier
+
 This example shows how to train an image classifier based on any
 TensorFlow Hub module that computes image feature vectors. By default,
 it uses the feature vectors computed by Inception V3 trained on ImageNet.
-See https://github.com/tensorflow/hub/blob/master/docs/modules/image.md
-for more options.
+For more options, search https://tfhub.dev for image feature vector modules.
 
 The top layer receives as input a 2048-dimensional vector (assuming
 Inception V3) for each image. We train a softmax layer on top of this
@@ -73,14 +75,14 @@ Run floating-point version of Mobilenet:
 
 ```bash
 python retrain.py --image_dir ~/flower_photos \
-    --tfhub_module https://tfhub.dev/google/imagenet/mobilenet_v1_100_224/feature_vector/1
+    --tfhub_module https://tfhub.dev/google/imagenet/mobilenet_v1_100_224/feature_vector/3
 ```
 
 Run Mobilenet, instrumented for quantization:
 
 ```bash
 python retrain.py --image_dir ~/flower_photos/ \
-    --tfhub_module https://tfhub.dev/google/imagenet/mobilenet_v1_100_224/quantops/feature_vector/1
+    --tfhub_module https://tfhub.dev/google/imagenet/mobilenet_v1_100_224/quantops/feature_vector/3
 ```
 
 These instrumented models can be converted to fully quantized mobile models via
@@ -119,6 +121,8 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from absl import logging
+
 import argparse
 import collections
 from datetime import datetime
@@ -131,13 +135,11 @@ import sys
 import numpy as np
 import tensorflow as tf
 import tensorflow_hub as hub
+from tensorflow.contrib import quantize as contrib_quantize
 
 FLAGS = None
 
 MAX_NUM_IMAGES_PER_CLASS = 2 ** 27 - 1  # ~134M
-
-# The location where variable checkpoints will be stored.
-CHECKPOINT_NAME = '/tmp/_retrain_checkpoint'
 
 # A module is understood as instrumented for quantization with TF-Lite
 # if it contains any of these ops.
@@ -163,7 +165,7 @@ def create_image_lists(image_dir, testing_percentage, validation_percentage):
     The order of items defines the class indices.
   """
   if not tf.gfile.Exists(image_dir):
-    tf.logging.error("Image directory '" + image_dir + "' not found.")
+    logging.error("Image directory '" + image_dir + "' not found.")
     return None
   result = collections.OrderedDict()
   sub_dirs = sorted(x[0] for x in tf.gfile.Walk(image_dir))
@@ -174,25 +176,29 @@ def create_image_lists(image_dir, testing_percentage, validation_percentage):
       is_root_dir = False
       continue
     extensions = sorted(set(os.path.normcase(ext)  # Smash case on Windows.
-                            for ext in ['JPEG', 'JPG', 'jpeg', 'jpg']))
+                            for ext in ['JPEG', 'JPG', 'jpeg', 'jpg', 'png']))
     file_list = []
-    dir_name = os.path.basename(sub_dir)
+    dir_name = os.path.basename(
+        # tf.gfile.Walk() returns sub-directory with trailing '/' when it is in
+        # Google Cloud Storage, which confuses os.path.basename().
+        sub_dir[:-1] if sub_dir.endswith('/') else sub_dir)
+
     if dir_name == image_dir:
       continue
-    tf.logging.info("Looking for images in '" + dir_name + "'")
+    logging.info("Looking for images in '%s'",  dir_name)
     for extension in extensions:
       file_glob = os.path.join(image_dir, dir_name, '*.' + extension)
       file_list.extend(tf.gfile.Glob(file_glob))
     if not file_list:
-      tf.logging.warning('No files found')
+      logging.warning('No files found')
       continue
     if len(file_list) < 20:
-      tf.logging.warning(
+      logging.warning(
           'WARNING: Folder has less than 20 images, which may cause issues.')
     elif len(file_list) > MAX_NUM_IMAGES_PER_CLASS:
-      tf.logging.warning(
-          'WARNING: Folder {} has more than {} images. Some images will '
-          'never be selected.'.format(dir_name, MAX_NUM_IMAGES_PER_CLASS))
+      logging.warning(
+          'WARNING: Folder %s has more than %s images. Some images will '
+          'never be selected.', dir_name, MAX_NUM_IMAGES_PER_CLASS)
     label_name = re.sub(r'[^a-z0-9]+', ' ', dir_name.lower())
     training_images = []
     testing_images = []
@@ -249,14 +255,14 @@ def get_image_path(image_lists, label_name, index, image_dir, category):
 
   """
   if label_name not in image_lists:
-    tf.logging.fatal('Label does not exist %s.', label_name)
+    logging.fatal('Label does not exist %s.', label_name)
   label_lists = image_lists[label_name]
   if category not in label_lists:
-    tf.logging.fatal('Category does not exist %s.', category)
+    logging.fatal('Category does not exist %s.', category)
   category_list = label_lists[category]
   if not category_list:
-    tf.logging.fatal('Label %s has no images in the category %s.',
-                     label_name, category)
+    logging.fatal('Label %s has no images in the category %s.',
+                  label_name, category)
   mod_index = index % len(category_list)
   base_name = category_list[mod_index]
   sub_dir = label_lists['dir']
@@ -352,12 +358,12 @@ def create_bottleneck_file(bottleneck_path, image_lists, label_name, index,
                            decoded_image_tensor, resized_input_tensor,
                            bottleneck_tensor):
   """Create a single bottleneck file."""
-  tf.logging.info('Creating bottleneck at ' + bottleneck_path)
+  logging.debug('Creating bottleneck at %s', bottleneck_path)
   image_path = get_image_path(image_lists, label_name, index,
                               image_dir, category)
   if not tf.gfile.Exists(image_path):
-    tf.logging.fatal('File does not exist %s', image_path)
-  image_data = tf.gfile.FastGFile(image_path, 'rb').read()
+    logging.fatal('File does not exist %s', image_path)
+  image_data = tf.gfile.GFile(image_path, 'rb').read()
   try:
     bottleneck_values = run_bottleneck_on_image(
         sess, image_data, jpeg_data_tensor, decoded_image_tensor,
@@ -366,7 +372,7 @@ def create_bottleneck_file(bottleneck_path, image_lists, label_name, index,
     raise RuntimeError('Error during processing file %s (%s)' % (image_path,
                                                                  str(e)))
   bottleneck_string = ','.join(str(x) for x in bottleneck_values)
-  with open(bottleneck_path, 'w') as bottleneck_file:
+  with tf.gfile.GFile(bottleneck_path, 'w') as bottleneck_file:
     bottleneck_file.write(bottleneck_string)
 
 
@@ -410,20 +416,20 @@ def get_or_create_bottleneck(sess, image_lists, label_name, index, image_dir,
                            image_dir, category, sess, jpeg_data_tensor,
                            decoded_image_tensor, resized_input_tensor,
                            bottleneck_tensor)
-  with open(bottleneck_path, 'r') as bottleneck_file:
+  with tf.gfile.GFile(bottleneck_path, 'r') as bottleneck_file:
     bottleneck_string = bottleneck_file.read()
   did_hit_error = False
   try:
     bottleneck_values = [float(x) for x in bottleneck_string.split(',')]
   except ValueError:
-    tf.logging.warning('Invalid float found, recreating bottleneck')
+    logging.warning('Invalid float found, recreating bottleneck')
     did_hit_error = True
   if did_hit_error:
     create_bottleneck_file(bottleneck_path, image_lists, label_name, index,
                            image_dir, category, sess, jpeg_data_tensor,
                            decoded_image_tensor, resized_input_tensor,
                            bottleneck_tensor)
-    with open(bottleneck_path, 'r') as bottleneck_file:
+    with tf.gfile.GFile(bottleneck_path, 'r') as bottleneck_file:
       bottleneck_string = bottleneck_file.read()
     # Allow exceptions to propagate here, since they shouldn't happen after a
     # fresh creation
@@ -471,8 +477,7 @@ def cache_bottlenecks(sess, image_lists, image_dir, bottleneck_dir,
 
         how_many_bottlenecks += 1
         if how_many_bottlenecks % 100 == 0:
-          tf.logging.info(
-              str(how_many_bottlenecks) + ' bottleneck files created.')
+          logging.info('%s bottleneck files created.', how_many_bottlenecks)
 
 
 def get_random_cached_bottlenecks(sess, image_lists, how_many, category,
@@ -578,8 +583,8 @@ def get_random_distorted_bottlenecks(
     image_path = get_image_path(image_lists, label_name, image_index, image_dir,
                                 category)
     if not tf.gfile.Exists(image_path):
-      tf.logging.fatal('File does not exist %s', image_path)
-    jpeg_data = tf.gfile.FastGFile(image_path, 'rb').read()
+      logging.fatal('File does not exist %s', image_path)
+    jpeg_data = tf.gfile.GFile(image_path, 'rb').read()
     # Note that we materialize the distorted_image_data as a numpy array before
     # sending running inference on the image. This involves 2 memory copies and
     # might be optimized in other implementations.
@@ -777,9 +782,9 @@ def add_final_retrain_ops(class_count, final_tensor_name, bottleneck_tensor,
   # transformed.
   if quantize_layer:
     if is_training:
-      tf.contrib.quantize.create_training_graph()
+      contrib_quantize.create_training_graph()
     else:
-      tf.contrib.quantize.create_eval_graph()
+      contrib_quantize.create_eval_graph()
 
   tf.summary.histogram('activations', final_tensor)
 
@@ -853,15 +858,15 @@ def run_final_eval(train_session, module_spec, class_count, image_lists,
           bottleneck_input: test_bottlenecks,
           ground_truth_input: test_ground_truth
       })
-  tf.logging.info('Final test accuracy = %.1f%% (N=%d)' %
-                  (test_accuracy * 100, len(test_bottlenecks)))
+  logging.info('Final test accuracy = %.1f%% (N=%d)',
+               test_accuracy * 100, len(test_bottlenecks))
 
   if FLAGS.print_misclassified_test_images:
-    tf.logging.info('=== MISCLASSIFIED TEST IMAGES ===')
+    logging.info('=== MISCLASSIFIED TEST IMAGES ===')
     for i, test_filename in enumerate(test_filenames):
       if predictions[i] != test_ground_truth[i]:
-        tf.logging.info('%70s  %s' % (test_filename,
-                                      list(image_lists.keys())[predictions[i]]))
+        logging.info('%70s  %s', test_filename,
+                     list(image_lists.keys())[predictions[i]])
 
 
 def build_eval_session(module_spec, class_count):
@@ -889,7 +894,7 @@ def build_eval_session(module_spec, class_count):
 
     # Now we need to restore the values from the training graph to the eval
     # graph.
-    tf.train.Saver().restore(eval_sess, CHECKPOINT_NAME)
+    tf.train.Saver().restore(eval_sess, FLAGS.checkpoint_path)
 
     evaluation_step, prediction = add_evaluation_step(final_tensor,
                                                       ground_truth_input)
@@ -906,7 +911,7 @@ def save_graph_to_file(graph_file_name, module_spec, class_count):
   output_graph_def = tf.graph_util.convert_variables_to_constants(
       sess, graph.as_graph_def(), [FLAGS.final_tensor_name])
 
-  with tf.gfile.FastGFile(graph_file_name, 'wb') as f:
+  with tf.gfile.GFile(graph_file_name, 'wb') as f:
     f.write(output_graph_def.SerializeToString())
 
 
@@ -965,13 +970,40 @@ def export_model(module_spec, class_count, saved_model_dir):
     )
 
 
+def logging_level_verbosity(logging_verbosity):
+  """Converts logging_level into TensorFlow logging verbosity value.
+
+  Args:
+    logging_verbosity: String value representing logging level: 'DEBUG', 'INFO',
+    'WARN', 'ERROR', 'FATAL'
+  """
+  name_to_level = {
+      'FATAL': logging.FATAL,
+      'ERROR': logging.ERROR,
+      'WARN': logging.WARN,
+      'INFO': logging.INFO,
+      'DEBUG': logging.DEBUG
+  }
+
+  try:
+    return name_to_level[logging_verbosity]
+  except Exception as e:
+    raise RuntimeError('Not supported logs verbosity (%s). Use one of %s.' %
+                       (str(e), list(name_to_level)))
+
+
 def main(_):
   # Needed to make sure the logging output is visible.
   # See https://github.com/tensorflow/tensorflow/issues/3047
-  tf.logging.set_verbosity(tf.logging.INFO)
+  logging_verbosity = logging_level_verbosity(FLAGS.logging_verbosity)
+  logging.set_verbosity(logging_verbosity)
+
+  logging.error('WARNING: This tool is deprecated in favor of '
+                'https://github.com/tensorflow/hub/tree/master/'
+                'tensorflow_hub/tools/make_image_classifier')
 
   if not FLAGS.image_dir:
-    tf.logging.error('Must set flag --image_dir.')
+    logging.error('Must set flag --image_dir.')
     return -1
 
   # Prepare necessary directories that can be used during training
@@ -982,12 +1014,12 @@ def main(_):
                                    FLAGS.validation_percentage)
   class_count = len(image_lists.keys())
   if class_count == 0:
-    tf.logging.error('No valid folders of images found at ' + FLAGS.image_dir)
+    logging.error('No valid folders of images found at %s', FLAGS.image_dir)
     return -1
   if class_count == 1:
-    tf.logging.error('Only one valid folder of images found at ' +
-                     FLAGS.image_dir +
-                     ' - multiple classes are needed for classification.')
+    logging.error('Only one valid folder of images found at %s '
+                  ' - multiple classes are needed for classification.',
+                  FLAGS.image_dir)
     return -1
 
   # See if the command-line flags mean we're applying any distortions.
@@ -1077,10 +1109,10 @@ def main(_):
             [evaluation_step, cross_entropy],
             feed_dict={bottleneck_input: train_bottlenecks,
                        ground_truth_input: train_ground_truth})
-        tf.logging.info('%s: Step %d: Train accuracy = %.1f%%' %
-                        (datetime.now(), i, train_accuracy * 100))
-        tf.logging.info('%s: Step %d: Cross entropy = %f' %
-                        (datetime.now(), i, cross_entropy_value))
+        logging.info('%s: Step %d: Train accuracy = %.1f%%',
+                     datetime.now(), i, train_accuracy * 100)
+        logging.info('%s: Step %d: Cross entropy = %f',
+                     datetime.now(), i, cross_entropy_value)
         # TODO: Make this use an eval graph, to avoid quantization
         # moving averages being updated by the validation set, though in
         # practice this makes a negligable difference.
@@ -1097,9 +1129,9 @@ def main(_):
             feed_dict={bottleneck_input: validation_bottlenecks,
                        ground_truth_input: validation_ground_truth})
         validation_writer.add_summary(validation_summary, i)
-        tf.logging.info('%s: Step %d: Validation accuracy = %.1f%% (N=%d)' %
-                        (datetime.now(), i, validation_accuracy * 100,
-                         len(validation_bottlenecks)))
+        logging.info('%s: Step %d: Validation accuracy = %.1f%% (N=%d)',
+                     datetime.now(), i, validation_accuracy * 100,
+                     len(validation_bottlenecks))
 
       # Store intermediate results
       intermediate_frequency = FLAGS.intermediate_store_frequency
@@ -1108,16 +1140,15 @@ def main(_):
           and i > 0):
         # If we want to do an intermediate save, save a checkpoint of the train
         # graph, to restore into the eval graph.
-        train_saver.save(sess, CHECKPOINT_NAME)
+        train_saver.save(sess, FLAGS.checkpoint_path)
         intermediate_file_name = (FLAGS.intermediate_output_graphs_dir +
                                   'intermediate_' + str(i) + '.pb')
-        tf.logging.info('Save intermediate result to : ' +
-                        intermediate_file_name)
+        logging.info('Save intermediate result to : %s', intermediate_file_name)
         save_graph_to_file(intermediate_file_name, module_spec,
                            class_count)
 
     # After training is complete, force one last save of the train checkpoint.
-    train_saver.save(sess, CHECKPOINT_NAME)
+    train_saver.save(sess, FLAGS.checkpoint_path)
 
     # We've completed all our training, so run a final test evaluation on
     # some new images we haven't used before.
@@ -1127,11 +1158,11 @@ def main(_):
 
     # Write out the trained graph and labels with the weights stored as
     # constants.
-    tf.logging.info('Save final result to : ' + FLAGS.output_graph)
+    logging.info('Save final result to : %s', FLAGS.output_graph)
     if wants_quantization:
-      tf.logging.info('The model is instrumented for quantization with TF-Lite')
+      logging.info('The model is instrumented for quantization with TF-Lite')
     save_graph_to_file(FLAGS.output_graph, module_spec, class_count)
-    with tf.gfile.FastGFile(FLAGS.output_labels, 'w') as f:
+    with tf.gfile.GFile(FLAGS.output_labels, 'w') as f:
       f.write('\n'.join(image_lists.keys()) + '\n')
 
     if FLAGS.saved_model_dir:
@@ -1300,16 +1331,27 @@ if __name__ == '__main__':
       '--tfhub_module',
       type=str,
       default=(
-          'https://tfhub.dev/google/imagenet/inception_v3/feature_vector/1'),
+          'https://tfhub.dev/google/imagenet/inception_v3/feature_vector/3'),
       help="""\
-      Which TensorFlow Hub module to use.
-      See https://github.com/tensorflow/hub/blob/master/docs/modules/image.md
-      for some publicly available ones.\
+      Which TensorFlow Hub module to use. For more options,
+      search https://tfhub.dev for image feature vector modules.\
       """)
   parser.add_argument(
       '--saved_model_dir',
       type=str,
       default='',
       help='Where to save the exported graph.')
+  parser.add_argument(
+      '--logging_verbosity',
+      type=str,
+      default='INFO',
+      choices=['DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL'],
+      help='How much logging output should be produced.')
+  parser.add_argument(
+      '--checkpoint_path',
+      type=str,
+      default='/tmp/_retrain_checkpoint',
+      help='Where to save checkpoint files.'
+  )
   FLAGS, unparsed = parser.parse_known_args()
   tf.app.run(main=main, argv=[sys.argv[0]] + unparsed)

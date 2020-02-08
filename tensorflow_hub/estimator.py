@@ -20,8 +20,10 @@ from __future__ import print_function
 
 import os
 
+from absl import logging
 import tensorflow as tf
 from tensorflow_hub import tf_utils
+from tensorflow_hub import tf_v1
 
 
 # A collection of pairs (key: string, module: Module) used internally to
@@ -35,6 +37,7 @@ _EXPORT_MODULES_COLLECTION = ("__tfhub_export_modules",)
 def register_module_for_export(module, export_name):
   """Register a Module to be exported under `export_name`.
 
+  DEPRECATION NOTE: This belongs to the hub.Module API and file format for TF1.
 
   This function registers `module` to be exported by `LatestModuleExporter`
   under a subdirectory named `export_name`.
@@ -50,16 +53,18 @@ def register_module_for_export(module, export_name):
   Raises:
     ValueError: if `export_name` is already taken in the current graph.
   """
-  for used_name, _ in tf.get_collection(_EXPORT_MODULES_COLLECTION):
+  for used_name, _ in tf_v1.get_collection(_EXPORT_MODULES_COLLECTION):
     if used_name == export_name:
       raise ValueError(
           "There is already a module registered to be exported as %r"
           % export_name)
-  tf.add_to_collection(_EXPORT_MODULES_COLLECTION, (export_name, module))
+  tf_v1.add_to_collection(_EXPORT_MODULES_COLLECTION, (export_name, module))
 
 
-class LatestModuleExporter(tf.estimator.Exporter):
+class LatestModuleExporter(tf_v1.estimator.Exporter):
   """Regularly exports registered modules into timestamped directories.
+
+  DEPRECATION NOTE: This belongs to the hub.Module API and file format for TF1.
 
   Modules can be registered to be exported by this class by calling
   `register_module_for_export` when constructing the graph. The
@@ -150,18 +155,18 @@ class LatestModuleExporter(tf.estimator.Exporter):
     session = _make_estimator_serving_session(estimator, self._serving_input_fn,
                                               checkpoint_path)
     with session:
-      export_modules = tf.get_collection(_EXPORT_MODULES_COLLECTION)
+      export_modules = tf_v1.get_collection(_EXPORT_MODULES_COLLECTION)
       if export_modules:
         for export_name, module in export_modules:
           module_export_path = os.path.join(temp_export_dir,
                                             tf.compat.as_bytes(export_name))
           module.export(module_export_path, session)
-        tf.gfile.Rename(temp_export_dir, export_dir)
+        tf_v1.gfile.Rename(temp_export_dir, export_dir)
         tf_utils.garbage_collect_exports(export_path, self._exports_to_keep)
         return export_dir
       else:
-        tf.logging.warn("LatestModuleExporter found zero modules to export. "
-                        "Use hub.register_module_for_export() if needed.")
+        logging.warn("LatestModuleExporter found zero modules to export. "
+                     "Use hub.register_module_for_export() if needed.")
         # No export_dir has been created.
         return None
 
@@ -185,9 +190,9 @@ def _make_estimator_serving_session(estimator, serving_input_fn,
       be None.
   """
   with tf.Graph().as_default() as g:
-    mode = tf.estimator.ModeKeys.PREDICT
-    tf.train.create_global_step(g)
-    tf.set_random_seed(estimator.config.tf_random_seed)
+    mode = tf_v1.estimator.ModeKeys.PREDICT
+    tf_v1.train.create_global_step(g)
+    tf_v1.set_random_seed(estimator.config.tf_random_seed)
     serving_input_receiver = serving_input_fn()
 
     estimator_spec = estimator.model_fn(
@@ -200,13 +205,13 @@ def _make_estimator_serving_session(estimator, serving_input_fn,
     # Note that MonitoredSession(), despite the name is not a Session, and
     # can't be used to export Modules as one can't use them with Savers.
     # As so this must use a raw tf.Session().
-    session = tf.Session(config=estimator._session_config)
+    session = tf_v1.Session(config=estimator._session_config)
     # pylint: enable=protected-access
 
     with session.as_default():
       # TODO(b/71839662): Consider if this needs to support TPUEstimatorSpec
       # which does not have a scaffold member.
-      saver_for_restore = estimator_spec.scaffold.saver or tf.train.Saver(
+      saver_for_restore = estimator_spec.scaffold.saver or tf_v1.train.Saver(
           sharded=True)
       saver_for_restore.restore(session, checkpoint_path)
     return session

@@ -32,14 +32,17 @@ import tarfile
 import tempfile
 import uuid
 
+from absl import flags
 import tensorflow as tf
 
 from tensorflow_hub import compressed_module_resolver
 from tensorflow_hub import resolver
 from tensorflow_hub import test_utils
 from tensorflow_hub import tf_utils
+from tensorflow_hub import tf_v1
 
-FLAGS = tf.flags.FLAGS
+
+FLAGS = flags.FLAGS
 
 
 class HttpCompressedFileResolverTest(tf.test.TestCase):
@@ -52,11 +55,11 @@ class HttpCompressedFileResolverTest(tf.test.TestCase):
     # Create three temp files.
     self.files = ["file1", "file2", "file3"]
     for cur_file in self.files:
-      with tf.gfile.GFile(cur_file, mode="w") as f:
+      with tf_v1.gfile.GFile(cur_file, mode="w") as f:
         f.write(cur_file)
 
     # Write a dummy file so download server doesn't return 404.
-    with tf.gfile.GFile("mock_module", mode="w") as f:
+    with tf_v1.gfile.GFile("mock_module", mode="w") as f:
       f.write("module")
 
     # Create TAR files.
@@ -179,7 +182,7 @@ class HttpCompressedFileResolverTest(tf.test.TestCase):
       path = http_resolver(handle)
     files = os.listdir(path)
     self.assertListEqual(sorted(files), ["file1", "file2", "file3"])
-    self.assertFalse(tf.gfile.Exists(lock_filename))
+    self.assertFalse(tf_v1.gfile.Exists(lock_filename))
 
   def testModuleAlreadyDownloaded(self):
     FLAGS.tfhub_cache_dir = os.path.join(self.get_temp_dir(), "cache_dir")
@@ -188,7 +191,7 @@ class HttpCompressedFileResolverTest(tf.test.TestCase):
     files = sorted(os.listdir(path))
     self.assertListEqual(files, ["file1", "file2", "file3"])
     creation_times = [
-        tf.gfile.Stat(os.path.join(path, f)).mtime_nsec for f in files
+        tf_v1.gfile.Stat(os.path.join(path, f)).mtime_nsec for f in files
     ]
     # Call resolver again and make sure that the module is not downloaded again
     # by checking the timestamps of the module files.
@@ -197,10 +200,10 @@ class HttpCompressedFileResolverTest(tf.test.TestCase):
     self.assertListEqual(files, ["file1", "file2", "file3"])
     self.assertListEqual(
         creation_times,
-        [tf.gfile.Stat(os.path.join(path, f)).mtime_nsec for f in files])
+        [tf_v1.gfile.Stat(os.path.join(path, f)).mtime_nsec for f in files])
 
   def testCorruptedArchive(self):
-    with tf.gfile.GFile("bad_archive.tar.gz", mode="w") as f:
+    with tf_v1.gfile.GFile("bad_archive.tar.gz", mode="w") as f:
       f.write("bad_archive")
     http_resolver = compressed_module_resolver.HttpCompressedFileResolver()
     try:

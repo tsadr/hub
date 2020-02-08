@@ -20,5 +20,9 @@ package(default_visibility = ["//visibility:private"])
 sh_binary(
     name = "build_pip_package",
     srcs = ["build_pip_package.sh"],
-    data = ["//tensorflow_hub"],
+    data = [
+        "//tensorflow_hub",
+        "//tensorflow_hub/tools/make_image_classifier",
+        "//tensorflow_hub/tools/make_nearest_neighbour_index",
+    ],
 )

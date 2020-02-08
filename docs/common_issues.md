@@ -1,7 +1,27 @@
 # Common issues
 
-If your issue is not listed here, please search the [github issues](https://github.com/tensorflow/hub/issues) before filling a new one.
+If your issue is not listed here, please search the
+[github issues](https://github.com/tensorflow/hub/issues) before filling a new
+one.
 
+## TypeError: 'AutoTrackable' object is not callable
+
+```python
+# BAD: Raises error
+embed = hub.load('https://tfhub.dev/google/nnlm-en-dim128/1')
+embed(['my text', 'batch'])
+```
+
+This error frequently arises when loading TF1 hub.Modules with the `hub.load()`
+API in TF2. Adding the correct signature should fix this problem. See the
+[TF-Hub migration guide for TF2](migration_tf2.md) for more details on moving to
+TF2 and the use of TF1 hub.Modules in TF2.
+
+```python
+
+embed = hub.load('https://tfhub.dev/google/nnlm-en-dim128/1')
+embed.signatures['default'](['my text', 'batch'])
+```
 
 ## Cannot download a module
 
@@ -10,21 +30,21 @@ up due to the network stack. Often this is a problem specific to the machine
 running the code and not an issue with the library. Here is a list of the common
 ones:
 
-* **"EOF occurred in violation of protocol"** - This issue is likely to be
-generated if the installed python version does not support the TLS requirements
-of the server hosting the module. Notably, python 2.7.5 is known to fail
-resolving modules from tfhub.dev domain. **FIX**: Please update to a newer
-python version.
+*   **"EOF occurred in violation of protocol"** - This issue is likely to be
+    generated if the installed python version does not support the TLS
+    requirements of the server hosting the module. Notably, python 2.7.5 is
+    known to fail resolving modules from tfhub.dev domain. **FIX**: Please
+    update to a newer python version.
 
-* **"cannot verify tfhub.dev's certificate"** - This issue is likely to be
-generated if something on the network is trying to act as the dev gTLD.
-Before .dev was used as a gTLD, developers and frameworks would sometimes use
-.dev names to help testing code. **FIX:** Identify and reconfigure the software
-that intercepts name resolution in the ".dev" domain.
+*   **"cannot verify tfhub.dev's certificate"** - This issue is likely to be
+    generated if something on the network is trying to act as the dev gTLD.
+    Before .dev was used as a gTLD, developers and frameworks would sometimes
+    use .dev names to help testing code. **FIX:** Identify and reconfigure the
+    software that intercepts name resolution in the ".dev" domain.
 
 If the above errors and fixes do not work, one can try to manually download a
-module by simulating the protocol of attaching `?tf-hub-format=compressed`
-to the URL to download a tar compressed file that has to be manually decompressed
+module by simulating the protocol of attaching `?tf-hub-format=compressed` to
+the URL to download a tar compressed file that has to be manually decompressed
 into a local file. The path to the local file can then be used instead of the
 URL. Here is a quick example:
 
@@ -41,17 +61,41 @@ $ python
 
 ## Running inference on a pre-initialized module
 
-If you are applying a module over data multiple times (e.g. to serve user
-requests) you should use TensorFlow Session.run to avoid the overhead of
-constructing and initializing parts of the graph multiple times.
+If you are writing a Python program that applies a module many times on input
+data, you can apply the following recipes. (Note: For serving requests in
+production servives, consider go/servo or other scalable, Python-free
+solutions.)
 
 Assuming your use-case model is **initialization** and subsequent **requests**
 (for example Django, Flask, custom HTTP server, etc.), you can set-up the
 serving as follows:
 
-* In the initialization part:
-    * Build the graph with a **placeholder** - entry point into the graph.
-    * Initialize the session.
+### TF2 SavedModels
+
+*   In the initialization part:
+    *   Load the TF2.0 model.
+
+```python
+import tensorflow_hub as hub
+
+embedding_fn = hub.load("https://tfhub.dev/google/universal-sentence-encoder/4")
+```
+
+*   In the request part:
+    *   Use the embedding function to run inference.
+
+```python
+embedding_fn(["Hello world"])
+```
+
+This call of a tf.function is optimized for performance, see
+[tf.function guide](https://www.tensorflow.org/guide/function).
+
+### TF1 Hub modules
+
+*   In the initialization part:
+    *   Build the graph with a **placeholder** - entry point into the graph.
+    *   Initialize the session.
 
 ```python
 import tensorflow as tf
@@ -72,9 +116,17 @@ session = tf.Session(graph=g)
 session.run(init_op)
 ```
 
-* In the request part:
-    * Use the session to feed data into the graph through the placeholder.
+*   In the request part:
+    *   Use the session to feed data into the graph through the placeholder.
 
 ```python
 result = session.run(embedded_text, feed_dict={text_input: ["Hello world"]})
 ```
+
+## Cannot change a model's dype (e.g., float32 to bfloat16)
+
+TensorFlow's SavedModels (shared on TF Hub or otherwise) contain
+operations that work on fixed data types (often, float32 for the weights
+and intermediate activations of neural networks). These cannot be
+changed after the fact when lodaing the SavedModel (but model publishers
+can choose to publish different models with different data types).

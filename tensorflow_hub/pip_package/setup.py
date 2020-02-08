@@ -17,33 +17,62 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from datetime import datetime
 from setuptools import find_packages
 from setuptools import setup
 
+import sys
+
 # Can't import the module during setup.py.
 # Use execfile to find __version__.
-with open("tensorflow_hub/version.py") as in_file:
-    exec(in_file.read())
+with open('tensorflow_hub/version.py') as in_file:
+  exec(in_file.read())
 
 REQUIRED_PACKAGES = [
     'numpy >= 1.12.0',
-    'six >= 1.10.0',
-    'protobuf >= 3.4.0',
+    'six >= 1.12.0',
+    'protobuf >= 3.8.0',  # No less than what ../WORKSPACE uses.
 ]
 
+project_name = 'tensorflow-hub'
+if '--project_name' in sys.argv:
+  project_name_idx = sys.argv.index('--project_name')
+  project_name = sys.argv[project_name_idx + 1]
+  sys.argv.remove('--project_name')
+  sys.argv.pop(project_name_idx)
+
+# If we're dealing with a nightly build we need to make sure that the
+# version changes for every release.
+version = __version__
+if project_name == 'tf-hub-nightly':
+  version += datetime.now().strftime('%Y%m%d%H%M')
 
 setup(
-    name='tensorflow-hub',  # Automatic: tensorflow_hub, etc. Case insensitive.
-    version=__version__.replace('-', ''),
+    name=project_name,  # Automatic: tensorflow_hub, etc. Case insensitive.
+    version=version.replace('-', ''),
     description=('TensorFlow Hub is a library to foster the publication, '
                  'discovery, and consumption of reusable parts of machine '
                  'learning models.'),
     long_description='',
     url='https://github.com/tensorflow/hub',
     author='Google LLC',
-    author_email='opensource@google.com',
-    install_requires=REQUIRED_PACKAGES,
+    author_email='packages@tensorflow.org',
     packages=find_packages(),
+    install_requires=REQUIRED_PACKAGES,
+    extras_require={
+        'make_image_classifier': ['keras_preprocessing[image]'],
+        'make_nearest_neighbour_index': ['apache_beam', 'annoy'],
+    },
+    entry_points={
+        'console_scripts': [
+            ('make_image_classifier = '
+             'tensorflow_hub.tools.make_image_classifier.'
+             'make_image_classifier:run_main [make_image_classifier]'),
+            ('make_nearest_neighbour_index = tensorflow_hub.tools.'
+             'make_nearest_neighbour_index.main:main '
+             '[make_nearest_neighbour_index]'),
+        ],
+    },
     # PyPI package information.
     classifiers=[
         'Development Status :: 4 - Beta',

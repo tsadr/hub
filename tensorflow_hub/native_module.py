@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Module implementation that loads/exports in Hub SavedModel format."""
+"""The implementation of deprecated hub.Module backed by custom SavedModels."""
 
 from __future__ import absolute_import
 from __future__ import division
@@ -22,6 +22,7 @@ import collections
 import os
 import re
 
+from absl import logging
 import tensorflow as tf
 
 from tensorflow_hub import meta_graph_lib
@@ -31,6 +32,7 @@ from tensorflow_hub import module_spec
 from tensorflow_hub import saved_model_lib
 from tensorflow_hub import tensor_info
 from tensorflow_hub import tf_utils
+from tensorflow_hub import tf_v1
 
 from tensorflow.core.protobuf import meta_graph_pb2
 
@@ -40,9 +42,47 @@ from tensorflow.core.protobuf import meta_graph_pb2
 # without having to do "import library_that_register_missing_op".
 # pylint: disable=g-bad-import-order
 from tensorflow.core.framework import op_def_pb2
+from tensorflow.core.framework import types_pb2
 from tensorflow.python.framework import op_def_registry
 from tensorflow.python import pywrap_tensorflow as c_api
 # pylint: enable=g-bad-import-order
+
+# Align `op_def_registry` API between TensorFlow 1.X and 2.X.
+if not hasattr(op_def_registry, "get"):
+
+  def get(name):
+    registered_ops = op_def_registry.get_registered_ops()
+    return registered_ops.get(name)
+
+  op_def_registry.get = get
+
+if not hasattr(op_def_registry, "sync"):
+
+  def _remove_non_deprecated_descriptions(op_def):
+    for input_arg in op_def.input_arg:
+      input_arg.description = ""
+    for output_arg in op_def.output_arg:
+      output_arg.description = ""
+    for attr in op_def.attr:
+      attr.description = ""
+
+    op_def.summary = ""
+    op_def.description = ""
+
+  def sync():
+    p_buffer = c_api.TF_GetAllOpList()
+    cpp_op_list = op_def_pb2.OpList()
+    cpp_op_list.ParseFromString(c_api.TF_GetBuffer(p_buffer))
+
+    registered_ops = op_def_registry.get_registered_ops()
+    for op_def in cpp_op_list.op:
+      # If an OpList is registered from a gen_*_ops.py, it does not any
+      # descriptions. Strip them here as well to satisfy validation in
+      # register_op_list.
+      _remove_non_deprecated_descriptions(op_def)
+      registered_ops[op_def.name] = op_def
+
+  op_def_registry.sync = sync
 
 _MODULE_PROTO_FILENAME_PB = "tfhub_module.pb"
 
@@ -52,23 +92,23 @@ _SUPPORTED_COLLECTIONS = set([
     # GLOBAL_VARIABLES, TRAINABLE_VARIABLES and MODEL_VARIABLES hold
     # tf.Variable objects saved in CollectionDef.bytes_list as serialized
     # VariableDef proto.
-    tf.GraphKeys.GLOBAL_VARIABLES,
-    tf.GraphKeys.TRAINABLE_VARIABLES,
-    tf.GraphKeys.MODEL_VARIABLES,
+    tf_v1.GraphKeys.GLOBAL_VARIABLES,
+    tf_v1.GraphKeys.TRAINABLE_VARIABLES,
+    tf_v1.GraphKeys.MODEL_VARIABLES,
     # This holds tf.Operation objects, saved in CollectionDef.node_list.
-    tf.GraphKeys.TABLE_INITIALIZERS,
+    tf_v1.GraphKeys.TABLE_INITIALIZERS,
     # This holds tf.Tensor objects, saved in CollectionDef.node_list.
-    tf.GraphKeys.UPDATE_OPS,
+    tf_v1.GraphKeys.UPDATE_OPS,
     # This holds tf.Tensor objects, saved in CollectionDef.node_list.
     # These are imported to help fine-tuning (unlike LOSSES, which the
     # importing model redefines from scratch).
-    tf.GraphKeys.REGULARIZATION_LOSSES,
+    tf_v1.GraphKeys.REGULARIZATION_LOSSES,
     # This holds constant tensors of type string.
-    tf.GraphKeys.ASSET_FILEPATHS,
+    tf_v1.GraphKeys.ASSET_FILEPATHS,
     # This holds serialized CondContextDef protos in CollectionDef.bytes_list.
-    tf.GraphKeys.COND_CONTEXT,
+    tf_v1.GraphKeys.COND_CONTEXT,
     # This holds serialized WhileContextDef protos in CollectionDef.bytes_list.
-    tf.GraphKeys.WHILE_CONTEXT,
+    tf_v1.GraphKeys.WHILE_CONTEXT,
     # saved_model_lib uses this collection internally for ModuleAttachments.
     saved_model_lib.ATTACHMENT_COLLECTION_SAVED,
 ])
@@ -85,11 +125,11 @@ class Loader(object):
 
   def is_supported(self, path):
     module_def_path = get_module_proto_path(path)
-    if not tf.gfile.Exists(module_def_path):
+    if not tf_v1.gfile.Exists(module_def_path):
       return False
 
     module_def_proto = module_def_pb2.ModuleDef()
-    with tf.gfile.Open(module_def_path, "rb") as f:
+    with tf_v1.gfile.Open(module_def_path, "rb") as f:
       module_def_proto.ParseFromString(f.read())
 
     return module_def_proto.format == module_def_pb2.ModuleDef.FORMAT_V3
@@ -97,7 +137,7 @@ class Loader(object):
   def __call__(self, path):
     module_def_path = get_module_proto_path(path)
     module_def_proto = module_def_pb2.ModuleDef()
-    with tf.gfile.Open(module_def_path, "rb") as f:
+    with tf_v1.gfile.Open(module_def_path, "rb") as f:
       module_def_proto.ParseFromString(f.read())
 
     if module_def_proto.format != module_def_pb2.ModuleDef.FORMAT_V3:
@@ -118,6 +158,9 @@ class Loader(object):
 def create_module_spec(module_fn, tags_and_args=None, drop_collections=None):
   """Creates a ModuleSpec from a function that builds the module's graph.
 
+  DEPRECATION NOTE: This belongs to the hub.Module API and file format for TF1.
+  For TF2, switch to plain SavedModels.
+
   The `module_fn` is called on a new graph (not the current one) to build the
   graph of the module and define its signatures via `hub.add_signature()`.
   Example:
@@ -133,8 +176,8 @@ def create_module_spec(module_fn, tags_and_args=None, drop_collections=None):
   See `add_signature()` for documentation on adding multiple input/output
   signatures.
 
-  NOTE: In anticipation of future TF-versions, `module_fn` is called on a graph
-  that uses resource variables by default. If you want old-style variables then
+  NOTE: The `module_fn` is called on a graph that uses resource variables
+  by default. If you want old-style variables ("ref variables"), then
   you can use `with tf.variable_scope("", use_resource=False)` in `module_fn`.
 
   Multiple graph variants can be defined by using the `tags_and_args` argument.
@@ -157,7 +200,7 @@ def create_module_spec(module_fn, tags_and_args=None, drop_collections=None):
     module_fn: a function to build a graph for the Module.
     tags_and_args: Optional list of tuples (tags, kwargs) of tags and keyword
       args used to define graph variants. If omitted, it is interpreted as
-      [set(), {}], meaning `module_fn` is called once with no args.
+      [(set(), {})], meaning `module_fn` is called once with no args.
     drop_collections: list of collection to drop.
 
   Returns:
@@ -179,11 +222,11 @@ def create_module_spec(module_fn, tags_and_args=None, drop_collections=None):
   saved_model_handler = saved_model_lib.SavedModelHandler()
   for tags, args in tags_and_args:
     with tf.Graph().as_default() as graph:
-      with tf.variable_scope("", use_resource=True):
+      with tf_v1.variable_scope("", use_resource=True):
         module_fn(**args)
 
       for collection_key in drop_collections:
-        del tf.get_collection_ref(collection_key)[:]
+        del tf_v1.get_collection_ref(collection_key)[:]
 
     err = find_state_op_colocation_error(graph, tags if report_tags else None)
     if err: raise ValueError(err)
@@ -195,7 +238,10 @@ def create_module_spec(module_fn, tags_and_args=None, drop_collections=None):
 def add_signature(name=None, inputs=None, outputs=None):
   """Adds a signature to the module definition.
 
-  NOTE: This must be called within a `module_fn` that is defining a Module.
+  DEPRECATION NOTE: This belongs to the hub.Module API and file format for TF1.
+  For TF2, switch to plain SavedModels.
+
+  NOTE: This must be called within a `module_fn` that is defining a hub.Module.
 
   Args:
     name: Signature name as a string. If omitted, it is interpreted as 'default'
@@ -222,7 +268,7 @@ def add_signature(name=None, inputs=None, outputs=None):
   if not isinstance(outputs, dict):
     outputs = {"default": outputs}
   message = find_signature_inputs_from_multivalued_ops(inputs)
-  if message: tf.logging.error(message)
+  if message: logging.error(message)
   message = find_signature_input_colocation_error(name, inputs)
   if message: raise ValueError(message)
   saved_model_lib.add_signature(name, inputs, outputs)
@@ -231,7 +277,10 @@ def add_signature(name=None, inputs=None, outputs=None):
 def attach_message(key, message):
   """Adds an attached message to the module definition.
 
-  NOTE: This must be called within a `module_fn` that is defining a Module.
+  DEPRECATION NOTE: This belongs to the hub.Module API and file format for TF1.
+  For TF2, switch to plain SavedModels.
+
+  NOTE: This must be called within a `module_fn` that is defining a hub.Module.
 
   See ModuleSpec.get_attached_message() for an introduction to attached messages
   and the API for module consumers.
@@ -353,7 +402,7 @@ class _ModuleSpec(module_spec.ModuleSpec):
         module_def_filename,
         module_def_proto.SerializeToString(),
         overwrite=False)
-    tf.logging.info("Exported TF-Hub module to: %s", path)
+    logging.info("Exported TF-Hub module to: %s", path)
 
 
 class _ModuleImpl(module_impl.ModuleImpl):
@@ -371,37 +420,46 @@ class _ModuleImpl(module_impl.ModuleImpl):
         unused name scope.
     """
     self._spec = spec
-    self._graph = tf.get_default_graph()
     self._meta_graph = meta_graph
     self._trainable = trainable
     self._checkpoint_path = checkpoint_path
 
     register_ops_if_needed({
         op.name for op in self._meta_graph.meta_info_def.stripped_op_list.op})
-    self._init_state(name)
 
-  def _init_state(self, name):
-    # Clear dependencies so Modules can be constructed from deep inside
+    if _is_tpu_graph_function():
+      # TODO(b/129142908): Hub should not use `tf.init_scope` since that makes
+      # it incompatible with tf.compat.v1.wrap_function. For now the only use
+      # case where hub used it was for tpu compatibility. This should be cleaned
+      # up at an early convinience.
+      scope_func = tf.init_scope
+    else:
+      scope_func = lambda: tf.control_dependencies(None)
+
+    # Clear dependencies so modules can be constructed from deep inside
     # functions that have dependencies active. Note that the dependencies
     # would be active when applying the Module signature, just not active
     # when creating the Module state. This use case has showed up in some
     # TPU training code.
-    with tf.control_dependencies(None):
-      variable_tensor_map, self._state_map = self._create_state_graph(name)
-      self._variable_map = recover_partitioned_variable_map(
-          get_node_map_from_tensor_map(variable_tensor_map)
-      )
-      if self._variable_map and self._checkpoint_path:
-        tf.train.init_from_checkpoint(self._checkpoint_path, self._variable_map)
+    with scope_func():
+      self._init_state(name)
 
-      # Build Saver so it can be used later on to export the variables.
-      if self._variable_map:
-        self._saver = tf.train.Saver(
-            self._variable_map,
-            sharded=True,
-            write_version=tf.train.SaverDef.V2)
-      else:
-        self._saver = None
+  def _init_state(self, name):
+    variable_tensor_map, self._state_map = self._create_state_graph(name)
+    self._variable_map = recover_partitioned_variable_map(
+        get_node_map_from_tensor_map(variable_tensor_map))
+    if self._variable_map and self._checkpoint_path:
+      tf_v1.train.init_from_checkpoint(self._checkpoint_path,
+                                       self._variable_map)
+
+    # Build Saver so it can be used later on to export the variables.
+    if self._variable_map:
+      self._saver = tf_v1.train.Saver(
+          self._variable_map,
+          sharded=True,
+          write_version=tf_v1.train.SaverDef.V2)
+    else:
+      self._saver = None
 
   def _create_state_graph(self, name):
     """Creates the graph nodes that hold the state of the Module.
@@ -417,19 +475,20 @@ class _ModuleImpl(module_impl.ModuleImpl):
           instantiated tensors to be used as a state_map.
     """
     import_collections = [
-        tf.GraphKeys.GLOBAL_VARIABLES,
-        tf.GraphKeys.MODEL_VARIABLES,
-        tf.GraphKeys.TABLE_INITIALIZERS,
-        tf.GraphKeys.ASSET_FILEPATHS,  # Typically used to initialize tables.
-        tf.GraphKeys.COND_CONTEXT,
-        tf.GraphKeys.WHILE_CONTEXT,
+        tf_v1.GraphKeys.GLOBAL_VARIABLES,
+        tf_v1.GraphKeys.MODEL_VARIABLES,
+        tf_v1.GraphKeys.TABLE_INITIALIZERS,
+        tf_v1.GraphKeys.ASSET_FILEPATHS,  # Typically used to initialize tables.
+        tf_v1.GraphKeys.COND_CONTEXT,
+        tf_v1.GraphKeys.WHILE_CONTEXT,
     ]
     if self._trainable:
       # TODO(b/64049014): Import UPDATE_OPS which do not depend on inputs.
-      import_collections.extend([tf.GraphKeys.TRAINABLE_VARIABLES,
-                                 tf.GraphKeys.REGULARIZATION_LOSSES])
+      import_collections.extend([tf_v1.GraphKeys.TRAINABLE_VARIABLES,
+                                 tf_v1.GraphKeys.REGULARIZATION_LOSSES])
 
-    absolute_scope_name = self._graph.unique_name(name, mark_as_used=False)
+    absolute_scope_name = tf_v1.get_default_graph().unique_name(
+        name, mark_as_used=False)
     relative_scope_name = absolute_scope_name.split("/")[-1]
     assert relative_scope_name == name  # verify name scope was indeed unused.
 
@@ -440,7 +499,7 @@ class _ModuleImpl(module_impl.ModuleImpl):
     meta_graph_lib.prefix_shared_name_attributes(meta_graph,
                                                  absolute_scope_name)
 
-    tf.train.import_meta_graph(
+    tf_v1.train.import_meta_graph(
         meta_graph,
         input_map={},
         import_scope=relative_scope_name)
@@ -448,44 +507,80 @@ class _ModuleImpl(module_impl.ModuleImpl):
     # Build a list from the variable name in the module definition to the actual
     # instantiated variables.
     variables_tensor_map = {}
-    for var in tf.global_variables():
+    for var in tf_v1.global_variables():
       if var.op.name.startswith(absolute_scope_name + "/"):
         variables_tensor_map[var.name[len(absolute_scope_name)+1:]] = var
 
     # Build a map of tensors to feed from the state-graph into subsequent
     # apply-graphs.
     def _get_tensor(tensor_name):
-      return self._graph.get_tensor_by_name(
-          meta_graph_lib.prepend_name_scope(tensor_name,
-                                            import_scope=absolute_scope_name))
+      return tf_v1.get_default_graph().get_tensor_by_name(
+          meta_graph_lib.prepend_name_scope(
+              tensor_name, import_scope=absolute_scope_name))
 
-    state_op_names = list_registered_stateful_ops_without_inputs()
-    state_map = get_state_map(self._meta_graph, state_op_names, set(),
-                              _get_tensor)
+    state_op_names = list_registered_stateful_ops_without_inputs(
+        meta_graph.graph_def)
+    state_map = get_state_map(meta_graph, state_op_names, set(), _get_tensor)
 
     return variables_tensor_map, state_map
 
   def create_apply_graph(self, signature, input_tensors, name):
     """See `ModuleImpl.create_apply_graph`."""
     signature_def = self._meta_graph.signature_def.get(signature)
+    meta_graph = meta_graph_pb2.MetaGraphDef()
+    meta_graph.CopyFrom(self._meta_graph)
+    apply_graph = tf_v1.get_default_graph()
+    infeed_map = tensor_info.build_input_map(signature_def.inputs,
+                                             input_tensors)
 
     # Build a input map to feed when importing the apply-graph by augmenting the
     # state_map with the input args. This allows an input to override a tensor
     # from the state-graph.
     feed_map = dict(self._state_map)
-    feed_map.update(
-        tensor_info.build_input_map(signature_def.inputs, input_tensors))
+    # If we are applying the module in a function with a TPUReplicateContext, we
+    # must capture the state tensors in generating our feedmap and prune out
+    # assign ops. Function graph semantics are different in that all ops are
+    # executed regardless of dependency.
+    # TODO(b/112575006): The following adds functionality of function call
+    # within a TPU context. Work to generalize this for all function calls is
+    # ongoing.
+    if _is_tpu_graph_function():
+      for k, v in self._state_map.items():
+        feed_map[k] = apply_graph.capture(v)
+      meta_graph_lib.prune_unused_nodes(meta_graph, signature_def)
+      # After we prune the metagraph def, we might need to prune away
+      # infeeds which no longer exist.
+      meta_graph_lib.prune_feed_map(meta_graph, infeed_map)
+    elif apply_graph.building_function:
+      # Log a warning if a user is using a hub module in function graph.
+      # This is only expected to work if the function graph is pruned and
+      # not all nodes are executed.
+      #
+      # E.g. it could work with "tf.compat.v1.wrap_function", but it will not
+      # work with defun, Dataset.map_fn, etc...
+      logging.warning("Using `hub.Module` while building a function: %s. This "
+                      "can lead to errors if the function is not pruned.",
+                      apply_graph.name)
+
+    # As state ops in the apply graph are unused, replace them with Placeholders
+    # so that in a heirarchical instantiation, apply_graph state ops are
+    # ignored.
+    replace_apply_state(
+        meta_graph,
+        list_registered_stateful_ops_without_inputs(meta_graph.graph_def),
+        feed_map)
+    feed_map.update(infeed_map)
 
     # Make state tensors enter the current context. This way the Module can be
     # applied inside a control flow structure such as a while_loop.
-    control_flow = self._graph._get_control_flow_context()  # pylint: disable=protected-access
+    control_flow = apply_graph._get_control_flow_context()  # pylint: disable=protected-access
     if control_flow:
       for key, value in sorted(feed_map.items()):
         feed_map[key] = control_flow.AddValue(value)
 
     # Don't mark the name as used at this point - import_scoped_meta_graph will
     # start using it.
-    absolute_scope_name = self._graph.unique_name(name, mark_as_used=False)
+    absolute_scope_name = apply_graph.unique_name(name, mark_as_used=False)
     relative_scope_name = absolute_scope_name.split("/")[-1]
 
     import_collections = [
@@ -494,21 +589,22 @@ class _ModuleImpl(module_impl.ModuleImpl):
         # time. As so everytime we bring the tensor with that has the asset
         # filename we must annotate it as so, so later re-exports have that
         # semantic information and can handle it.
-        tf.GraphKeys.ASSET_FILEPATHS,
-        tf.GraphKeys.COND_CONTEXT,
-        tf.GraphKeys.WHILE_CONTEXT,
+        tf_v1.GraphKeys.ASSET_FILEPATHS,
+        tf_v1.GraphKeys.COND_CONTEXT,
+        tf_v1.GraphKeys.WHILE_CONTEXT,
     ]
     if self._trainable:
-      import_collections.extend([tf.GraphKeys.UPDATE_OPS])
-
-    meta_graph = meta_graph_pb2.MetaGraphDef()
-    meta_graph.CopyFrom(self._meta_graph)
+      import_collections.extend([tf_v1.GraphKeys.UPDATE_OPS])
 
     meta_graph_lib.filter_collections(meta_graph, import_collections)
     meta_graph_lib.prefix_shared_name_attributes(meta_graph,
                                                  absolute_scope_name)
+    if len(meta_graph.collection_def) and _is_tpu_graph_function():
+      raise NotImplementedError(
+          "Applying modules with collections inside TPU functions is not "
+          "supported. Collections found: %s" % str(meta_graph.collection_def))
 
-    tf.train.import_meta_graph(
+    tf_v1.train.import_meta_graph(
         meta_graph,
         input_map=feed_map,
         import_scope=relative_scope_name)
@@ -521,9 +617,9 @@ class _ModuleImpl(module_impl.ModuleImpl):
       try:
         return feed_map[name]
       except KeyError:
-        return self._graph.get_tensor_by_name(
-            meta_graph_lib.prepend_name_scope(name,
-                                              import_scope=absolute_scope_name))
+        return apply_graph.get_tensor_by_name(
+            meta_graph_lib.prepend_name_scope(
+                name, import_scope=absolute_scope_name))
 
     return tensor_info.build_output_map(signature_def.outputs, get_tensor)
 
@@ -544,20 +640,26 @@ class _ModuleImpl(module_impl.ModuleImpl):
     return self._variable_map
 
 
-def list_registered_stateful_ops_without_inputs():
+def is_registered_stateful_op_without_inputs(name):
+  """Checks if an op is registered, stateful and does not expect inputs."""
+  op_def = op_def_registry.get(name)
+  return op_def is not None and (op_def.is_stateful and not op_def.input_arg)
+
+
+def list_registered_stateful_ops_without_inputs(graph_def):
   """Returns set of registered stateful ops that do not expect inputs.
 
   This list is used to identify the ops to be included in the state-graph and
   that are subsequently fed into the apply-graphs.
 
+  Args:
+    graph_def: GraphDef to list ops from.
+
   Returns:
     A set of strings.
   """
-  return set([
-      name
-      for name, op in op_def_registry.get_registered_ops().items()
-      if op.is_stateful and not op.input_arg
-  ])
+  used_ops = (node.op for node in graph_def.node)
+  return {op for op in used_ops if is_registered_stateful_op_without_inputs(op)}
 
 
 def get_state_map(meta_graph, state_ops, unsupported_state_ops,
@@ -576,6 +678,25 @@ def get_state_map(meta_graph, state_ops, unsupported_state_ops,
     if node.op in unsupported_state_ops:
       raise ValueError("Unsupported stateful op: %s" % node.op)
   return state_map
+
+
+def replace_apply_state(meta_graph, state_ops, feed_map):
+  """Replaces state ops with non state Placeholder ops for the apply graph."""
+  for node in meta_graph.graph_def.node:
+    keys_to_purge = []
+    tensor_name = node.name + ":0"
+    # Verify that the node is a state op and that its due to be rewired
+    # in the feedmap.
+    if node.op in state_ops and tensor_name in feed_map:
+      node.op = "Placeholder"
+      for key in node.attr:
+        # Only shape and dtype are required for Placeholder. Remove other
+        # attributes.
+        if key != "shape":
+          keys_to_purge.append(key)
+      for key in keys_to_purge:
+        del node.attr[key]
+      node.attr["dtype"].type = types_pb2.DT_RESOURCE
 
 
 def get_node_map_from_tensor_map(tensor_map):
@@ -708,6 +829,10 @@ def check_collections_are_supported(saved_model_handler, supported):
                        " as appropriate." % list(unsupported))
 
 
+def get_unsupported_collections(used_collection_keys):
+  return list(set(used_collection_keys) - _SUPPORTED_COLLECTIONS)
+
+
 def register_ops_if_needed(graph_ops):
   """Register graph ops absent in op_def_registry, if present in c++ registry.
 
@@ -715,41 +840,22 @@ def register_ops_if_needed(graph_ops):
     graph_ops: set with graph op names to register.
 
   Raises:
-    RuntimeError: if `graph_ops` contains ops that are not in either python or
-      c++ registry.
+    tf.errors.NotFoundError: if `graph_ops` contains ops that are not in either
+    python or c++ registry.
   """
-  missing_ops = graph_ops - set(op_def_registry.get_registered_ops().keys())
-
-  if not missing_ops:
+  if all(op_def_registry.get(op) is not None for op in graph_ops):
     return
-
-  p_buffer = c_api.TF_GetAllOpList()
-  cpp_op_list = op_def_pb2.OpList()
-  cpp_op_list.ParseFromString(c_api.TF_GetBuffer(p_buffer))
-  cpp_registry_ops = {op.name: op for op in cpp_op_list.op}
-
-  missing_op_list = op_def_pb2.OpList()
-  for missing_op in missing_ops:
-    if missing_op not in cpp_registry_ops:
-      tf.logging.info(
-          "Op %s is missing from both the python and C++ registry.",
-          missing_op)
-    else:
-      missing_op_list.op.extend([cpp_registry_ops[missing_op]])
-      tf.logging.info(
-          "Adding op %s from c++ registry to python registry.",
-          missing_op)
-
-  op_def_registry.register_op_list(missing_op_list)
 
   # Note: Only raise missing op ValueError after trying to load ops.
   # This allows the test to exercise all the calls into TensorFlow
   # without having to write a C + python test.
-  if not missing_ops <= set(cpp_registry_ops.keys()):
-    raise RuntimeError(
+  op_def_registry.sync()
+  missing_ops = {op for op in graph_ops if op_def_registry.get(op) is None}
+  if missing_ops:
+    raise tf.errors.NotFoundError(
+        None, None,
         "Graph ops missing from the python registry (%s) are also absent from "
-        "the c++ registry."
-        % missing_ops.difference(set(cpp_registry_ops.keys())))
+        "the c++ registry." % missing_ops)
 
 
 def fix_colocation_after_import(input_map, absolute_import_scope):
@@ -881,7 +987,8 @@ def _build_colocation_attr_map(input_map, absolute_import_scope):
   # Add unchanged mappings for additional, non-remapped outputs of ops touched
   # by the input_map. For now, these just signal inconsistency when used.
   for imported_op_name, used_outputs in used_outputs_of_imported_ops.items():
-    imported_op = tf.get_default_graph().get_operation_by_name(imported_op_name)
+    imported_op = tf_v1.get_default_graph().get_operation_by_name(
+        imported_op_name)
     unused_outputs = set(range(len(imported_op.outputs))) - used_outputs
     if not unused_outputs: continue
     key = tf.compat.as_bytes("loc:@" + imported_op_name)
@@ -918,7 +1025,7 @@ def _apply_colocation_attr_map(colocation_attr_map, absolute_import_scope):
     ValueError: if rewriting runs into an inconsistent value in
       `colocation_attr_map`.
   """
-  graph = tf.get_default_graph()
+  graph = tf_v1.get_default_graph()
   for op in graph.get_operations():
     # Rewrite the values of the "_class" attr that store colocation constraints.
     # NOTE: The colocation_group loc:@X of a node with itself is not stored
@@ -929,7 +1036,7 @@ def _apply_colocation_attr_map(colocation_attr_map, absolute_import_scope):
       class_values = op.get_attr("_class")
     except ValueError:
       continue  # No _class attr found; nothing to do.
-    new_attr_value = tf.AttrValue()
+    new_attr_value = tf_v1.AttrValue()
     new_coloc_groups = []
     for class_value in class_values:
       if class_value.startswith(tf.compat.as_bytes("loc:@")):
@@ -976,7 +1083,8 @@ def _apply_colocation_attr_map(colocation_attr_map, absolute_import_scope):
 
 def find_state_op_colocation_error(graph, reported_tags=None):
   """Returns error message for colocation of state ops, or None if ok."""
-  state_op_types = list_registered_stateful_ops_without_inputs()
+  state_op_types = list_registered_stateful_ops_without_inputs(
+      graph.as_graph_def())
   state_op_map = {op.name: op for op in graph.get_operations()
                   if op.type in state_op_types}
   for op in state_op_map.values():
@@ -1028,3 +1136,10 @@ def find_signature_inputs_from_multivalued_ops(inputs):
         "colocation constraints have to be rewritten.\nAffected inputs: %s" %
         ", ".join("%s='%s'" % pair for pair in warnings))
   return None
+
+
+def _is_tpu_graph_function():
+  graph = tf_v1.get_default_graph()
+  return (graph.building_function and
+          type(graph._get_control_flow_context()).__name__.endswith(  # pylint: disable=protected-access
+              "TPUReplicateContext"))
